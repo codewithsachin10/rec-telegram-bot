@@ -281,26 +281,22 @@ def main() -> None:
     application.add_handler(login_handler)
     application.add_handler(ask_handler)
 
-    # Run the bot until the user presses Ctrl-C
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    # Run the bot
+    if "RENDER" in os.environ:
+        # On Render, use native Webhooks instead of Polling
+        port = int(os.environ.get("PORT", 8080))
+        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{token}"
+        logger.info(f"Starting Webhook on port {port} for {webhook_url}")
+        
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            webhook_url=webhook_url
+        )
+    else:
+        # Locally, use Polling
+        logger.info("Starting local polling...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
-    # Start a dummy web server in a background thread to satisfy Render's free Web Service port requirement
-    import threading
-    from flask import Flask
-
-    app = Flask(__name__)
-
-    @app.route('/')
-    def home():
-        return "Telegram Bot is running!"
-
-    def run_server():
-        port = int(os.environ.get("PORT", 8080))
-        app.run(host="0.0.0.0", port=port, use_reloader=False)
-
-    server_thread = threading.Thread(target=run_server)
-    server_thread.daemon = True
-    server_thread.start()
-
     main()
