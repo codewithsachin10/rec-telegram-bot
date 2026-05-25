@@ -32,7 +32,14 @@ def _mock_match(pattern, string, flags=0):
     return _original_match(pattern, string, flags)
 supabase._sync.client.re.match = _mock_match
 
-supabase: Client = create_client(url, key)
+supabase: Client | None = None
+try:
+    if url and key:
+        supabase = create_client(url, key)
+    else:
+        logger.error("Supabase credentials missing. Supabase client not initialized.")
+except Exception as e:
+    logger.error(f"Failed to initialize Supabase: {e}")
 
 # States for login conversation
 AWAITING_EMAIL, AWAITING_PASSWORD = range(2)
