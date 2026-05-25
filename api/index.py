@@ -1,9 +1,11 @@
 import os
 import logging
-from dotenv import load_dotenv
-from telegram import Update, ReplyKeyboardRemove
+import asyncio
+from fastapi import FastAPI, Request, Response
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
 from supabase import create_client, Client
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
@@ -34,12 +36,9 @@ supabase: Client = create_client(url, key)
 
 # States for login conversation
 AWAITING_EMAIL, AWAITING_PASSWORD = range(2)
-
-# States for ask conversation
 AWAITING_TITLE, AWAITING_DESC = range(2)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send a message when the command /start is issued."""
     user = update.effective_user
     chat_id = update.effective_chat.id
 
@@ -66,7 +65,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 # --- LOGIN FLOW ---
-
 async def login_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
         "Let's link your account! 🔗\n\n"
@@ -115,8 +113,6 @@ async def login_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.error(f"Login error: {e}")
         await update.message.reply_text(
             f"❌ Login failed. Error: {str(e)}\n\n"
-            f"Email received: '{email}'\n"
-            f"Pass received: '{password}'\n\n"
             "Please check your email and password and try /login again."
         )
 
@@ -128,7 +124,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 # --- FEATURE COMMANDS ---
-
 async def get_student_id(chat_id: str):
     user_resp = supabase.table("telegram_users").select("student_id").eq("chat_id", chat_id).execute()
     if not user_resp.data:
@@ -137,7 +132,6 @@ async def get_student_id(chat_id: str):
 
 async def marks_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
-    
     student_id = await get_student_id(chat_id)
     if not student_id:
         await update.message.reply_text("You need to /login first!")
@@ -186,9 +180,7 @@ async def announcements_command(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(e)
         await update.message.reply_text("Sorry, couldn't fetch announcements right now.")
 
-
 # --- ASK FLOW ---
-
 async def ask_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = str(update.effective_chat.id)
     student_id = await get_student_id(chat_id)
@@ -237,7 +229,6 @@ async def ask_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         
     return ConversationHandler.END
 
-
 async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat_id = str(update.effective_chat.id)
     try:
@@ -246,15 +237,15 @@ async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except:
         await update.message.reply_text("Failed to logout.")
 
-def main() -> None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token or token == "your_bot_token_here":
-        logger.error("Please set TELEGRAM_BOT_TOKEN in .env")
-        return
+# FastAPI App
+app = FastAPI()
 
-    application = Application.builder().token(token).build()
+# Global Telegram Application Instance
+token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+ptb_application = Application.builder().token(token).build() if token else None
 
-    # Login Conversation Handler
+# Register Handlers
+if ptb_application:
     login_handler = ConversationHandler(
         entry_points=[CommandHandler("login", login_start)],
         states={
@@ -264,7 +255,6 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    # Ask Conversation Handler
     ask_handler = ConversationHandler(
         entry_points=[CommandHandler("ask", ask_start)],
         states={
@@ -274,29 +264,32 @@ def main() -> None:
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("marks", marks_command))
-    application.add_handler(CommandHandler("announcements", announcements_command))
-    application.add_handler(CommandHandler("logout", logout_command))
-    application.add_handler(login_handler)
-    application.add_handler(ask_handler)
+    ptb_application.add_handler(CommandHandler("start", start))
+    ptb_application.add_handler(CommandHandler("marks", marks_command))
+    ptb_application.add_handler(CommandHandler("announcements", announcements_command))
+    ptb_application.add_handler(CommandHandler("logout", logout_command))
+    ptb_application.add_handler(login_handler)
+    ptb_application.add_handler(ask_handler)
 
-    # Run the bot
-    if "RENDER" in os.environ:
-        # On Render, use native Webhooks instead of Polling
-        port = int(os.environ.get("PORT", 8080))
-        webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{token}"
-        logger.info(f"Starting Webhook on port {port} for {webhook_url}")
-        
-        application.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            webhook_url=webhook_url
-        )
-    else:
-        # Locally, use Polling
-        logger.info("Starting local polling...")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+@app.on_event("startup")
+async def startup_event():
+    if ptb_application:
+        await ptb_application.initialize()
 
-if __name__ == "__main__":
-    main()
+@app.post("/api/webhook")
+async def telegram_webhook(req: Request):
+    if not ptb_application:
+        return Response(status_code=500, content="Bot not configured")
+    
+    try:
+        data = await req.json()
+        update = Update.de_json(data, ptb_application.bot)
+        await ptb_application.process_update(update)
+        return Response(status_code=200, content="OK")
+    except Exception as e:
+        logger.error(f"Error processing update: {e}")
+        return Response(status_code=500, content="Internal Server Error")
+
+@app.get("/")
+def home():
+    return {"status": "ok", "message": "REC Telegram Bot is running on Vercel!"}
