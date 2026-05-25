@@ -285,4 +285,22 @@ def main() -> None:
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
+    # Start a dummy web server in a background thread to satisfy Render's free Web Service port requirement
+    import threading
+    from flask import Flask
+
+    app = Flask(__name__)
+
+    @app.route('/')
+    def home():
+        return "Telegram Bot is running!"
+
+    def run_server():
+        port = int(os.environ.get("PORT", 8080))
+        app.run(host="0.0.0.0", port=port, use_reloader=False)
+
+    server_thread = threading.Thread(target=run_server)
+    server_thread.daemon = True
+    server_thread.start()
+
     main()
